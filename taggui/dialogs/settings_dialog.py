@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (QDialog, QFileDialog, QGridLayout, QLabel,
                                QLineEdit, QPushButton, QVBoxLayout)
@@ -29,8 +31,10 @@ class SettingsDialog(QDialog):
                               Qt.AlignmentFlag.AlignRight)
         grid_layout.addWidget(QLabel('Show tag autocomplete suggestions'),
                               5, 0, Qt.AlignmentFlag.AlignRight)
-        grid_layout.addWidget(QLabel('Auto-captioning models directory'), 6, 0,
-                              Qt.AlignmentFlag.AlignRight)
+        grid_layout.addWidget(QLabel('Auto-captioning GGUF models directory'),
+                              6, 0, Qt.AlignmentFlag.AlignRight)
+        grid_layout.addWidget(QLabel('llama.cpp server binary (llama-server)'),
+                              8, 0, Qt.AlignmentFlag.AlignRight)
 
         font_size_spin_box = SettingsSpinBox(
             key='font_size', default=DEFAULT_SETTINGS['font_size'],
@@ -75,6 +79,17 @@ class SettingsDialog(QDialog):
         models_directory_button.setFixedWidth(
             int(models_directory_button.sizeHint().width() * 1.3))
         models_directory_button.clicked.connect(self.set_models_directory_path)
+        self.llama_server_path_line_edit = SettingsLineEdit(
+            key='llama_server_path',
+            default=DEFAULT_SETTINGS['llama_server_path'])
+        self.llama_server_path_line_edit.setMinimumWidth(400)
+        self.llama_server_path_line_edit.setClearButtonEnabled(True)
+        self.llama_server_path_line_edit.setPlaceholderText(
+            '/home/user/AI/llama.cpp/build/bin/llama-server')
+        llama_server_path_button = QPushButton('Select File...')
+        llama_server_path_button.setFixedWidth(
+            int(llama_server_path_button.sizeHint().width() * 1.3))
+        llama_server_path_button.clicked.connect(self.set_llama_server_path)
         file_types_line_edit = SettingsLineEdit(
             key='image_list_file_formats',
             default=DEFAULT_SETTINGS['image_list_file_formats'])
@@ -96,6 +111,10 @@ class SettingsDialog(QDialog):
         grid_layout.addWidget(self.models_directory_line_edit, 6, 1,
                               Qt.AlignmentFlag.AlignLeft)
         grid_layout.addWidget(models_directory_button, 7, 1,
+                              Qt.AlignmentFlag.AlignLeft)
+        grid_layout.addWidget(self.llama_server_path_line_edit, 8, 1,
+                              Qt.AlignmentFlag.AlignLeft)
+        grid_layout.addWidget(llama_server_path_button, 9, 1,
                               Qt.AlignmentFlag.AlignLeft)
         layout.addLayout(grid_layout)
 
@@ -148,8 +167,25 @@ class SettingsDialog(QDialog):
         else:
             initial_directory_path = ''
         models_directory_path = QFileDialog.getExistingDirectory(
-            parent=self, caption='Select directory containing auto-captioning '
-                                 'models',
+            parent=self, caption='Select directory containing GGUF '
+                                 'auto-captioning models',
             dir=initial_directory_path)
         if models_directory_path:
             self.models_directory_line_edit.setText(models_directory_path)
+
+    @Slot()
+    def set_llama_server_path(self):
+        llama_server_path = self.settings.value(
+            'llama_server_path',
+            defaultValue=DEFAULT_SETTINGS['llama_server_path'], type=str)
+        if llama_server_path:
+            initial_directory_path = str(Path(llama_server_path).parent)
+        else:
+            initial_directory_path = ''
+        llama_server_path, _ = QFileDialog.getOpenFileName(
+            parent=self,
+            caption='Select the llama.cpp server binary (llama-server)',
+            dir=initial_directory_path,
+            filter='All files (*)')
+        if llama_server_path:
+            self.llama_server_path_line_edit.setText(llama_server_path)

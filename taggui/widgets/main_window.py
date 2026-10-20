@@ -6,7 +6,6 @@ from PySide6.QtGui import (QAction, QCloseEvent, QDesktopServices, QIcon,
 from PySide6.QtWidgets import (QApplication, QFileDialog, QMainWindow,
                                QMessageBox, QStackedWidget, QVBoxLayout,
                                QWidget)
-from transformers import AutoTokenizer
 
 from dialogs.batch_reorder_tags_dialog import BatchReorderTagsDialog
 from dialogs.find_and_replace_dialog import FindAndReplaceDialog
@@ -20,6 +19,7 @@ from utils.image import Image
 from utils.key_press_forwarder import KeyPressForwarder
 from utils.settings import DEFAULT_SETTINGS, get_settings, get_tag_separator
 from utils.shortcut_remover import ShortcutRemover
+from utils.tokenizer import ClipTokenizer
 from utils.utils import get_resource_path, pluralize
 from widgets.all_tags_editor import AllTagsEditor
 from widgets.auto_captioner import AutoCaptioner
@@ -28,8 +28,8 @@ from widgets.image_tags_editor import ImageTagsEditor
 from widgets.image_viewer import ImageViewer
 
 ICON_PATH = Path('images/icon.ico')
-GITHUB_REPOSITORY_URL = 'https://github.com/jhc13/taggui'
-TOKENIZER_DIRECTORY_PATH = Path('clip-vit-base-patch32')
+GITHUB_REPOSITORY_URL = 'https://github.com/WelsCoding/taggui-lama'
+TOKENIZER_PATH = Path('clip-vit-base-patch32') / 'tokenizer.json'
 
 
 class MainWindow(QMainWindow):
@@ -46,8 +46,7 @@ class MainWindow(QMainWindow):
         tag_separator = get_tag_separator()
         self.image_list_model = ImageListModel(image_list_image_width,
                                                tag_separator)
-        tokenizer = AutoTokenizer.from_pretrained(
-            get_resource_path(TOKENIZER_DIRECTORY_PATH))
+        tokenizer = ClipTokenizer(get_resource_path(TOKENIZER_PATH))
         self.proxy_image_list_model = ProxyImageListModel(
             self.image_list_model, tokenizer, tag_separator)
         self.image_list_model.proxy_image_list_model = (

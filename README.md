@@ -1,10 +1,27 @@
-# TagGUI
+# TagGUI (llama.cpp edition)
 
 <img src='images/icon.png' alt='TagGUI icon' width='128'>
 
-Cross-platform desktop application for quickly adding and editing image tags
-and captions, aimed towards creators of image datasets for generative AI
-models.
+A fork of [TagGUI](https://github.com/jhc13/taggui) for quickly adding and
+editing image tags and captions, aimed towards creators of image datasets for
+generative AI models.
+
+This fork removes the built-in PyTorch/transformers inference stack. Instead,
+all LLM inference for automatic captioning is outsourced to a separate local
+install of [llama.cpp](https://github.com/ggml-org/llama.cpp):
+
+- TagGUI starts a local `llama-server` process when captioning begins and
+  terminates it immediately when captioning is done, so the VRAM is freed
+  again.
+- Any vision model supported by llama.cpp can be used, as long as it is
+  available in the GGUF format (a model file plus its multimodal projector
+  `mmproj` file).
+- TagGUI passes the correct chat template to `llama-server` for the selected
+  model family, and supports thinking/reasoning control where applicable.
+- Models that llama.cpp does not support (such as the WD Tagger family) are
+  no longer supported by this fork.
+
+The setup is targeted at Linux with a CUDA-capable NVIDIA GPU.
 
 <img src='images/screenshot-v1.25.0.png' alt='TagGUI screenshot' width='100%'>
 
@@ -13,29 +30,57 @@ models.
 - Keyboard-friendly interface for fast tagging
 - Tag autocomplete based on your own most-used tags
 - Integrated token counter (for Stable Diffusion)
-- Automatic caption and tag generation
+- Automatic caption generation using local GGUF vision models via llama.cpp
 - Batch tag operations for renaming, deleting, and sorting tags
 - Advanced image list filtering
 
+## Requirements
+
+- Linux with a CUDA-capable GPU (the assumed setup for this fork)
+- Python 3.11 or newer (Python 3.12 recommended)
+- A local build of [llama.cpp](https://github.com/ggml-org/llama.cpp) with CUDA
+  support that includes the `llama-server` binary, for example built with:
+
+  ```bash
+  git clone https://github.com/ggml-org/llama.cpp
+  cd llama.cpp
+  cmake -B build -DGGML_CUDA=ON
+  cmake --build build --config Release -j
+  ```
+
+  The binary is then located at
+  `/path/to/llama.cpp/build/bin/llama-server`.
+  A recent build is recommended so that all chat templates and the reasoning
+  flags (`--reasoning`, `--reasoning-effort`) are available.
+
+- A GGUF vision model and its multimodal projector (`mmproj`) GGUF file, for
+  example from
+  [the list of pre-quantized multimodal models in the llama.cpp
+  documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/multimodal.md).
+  Popular choices include Qwen3-VL, Qwen2.5-VL, Gemma 3, InternVL, Llama 3.2
+  Vision, MiniCPM-V, Mistral Small 3.1/3.2, Phi-4 Multimodal, SmolVLM, and
+  Moondream2.
+
 ## Installation
 
-The easiest way to use the application is to download the latest release from
-the [releases page](https://www.github.com/jhc13/taggui/releases).
-Choose the appropriate file for your operating system, extract it wherever you
-want, and run the executable file inside.
-You may have to install [7-Zip](https://www.7-zip.org/download.html) to
-extract the files if you don't have it on your system.
+Clone this repository and run the startup script:
 
-- macOS users: There is no macOS release because it requires a device running
-  the OS, and I do not have one. You can still install and run the program
-  manually (see below).
-- Linux users: You may need to install `libxcb-cursor0`.
-  (See [this Stack Overflow answer](https://stackoverflow.com/a/75941575).)
+```bash
+git clone https://github.com/WelsCoding/taggui-lama
+cd taggui-lama
+./run.sh
+```
 
-Alternatively, you can install manually by cloning this repository and
-installing the dependencies in `requirements.txt`.
-Run `taggui/run_gui.py` to start the program.
-Python 3.12 is recommended, but Python 3.11 should also work.
+`run.sh` handles all first-use startup tasks:
+
+- If the virtual environment (`.venv`) does not exist yet, it creates it and
+  installs the dependencies from `requirements.txt` into it.
+- If the virtual environment already exists, it just starts the GUI.
+- Run `./run.sh --reinstall` to recreate the virtual environment after
+  dependency changes.
+
+Alternatively, install the dependencies in `requirements.txt` manually into a
+virtual environment and run `taggui/run_gui.py` with it.
 
 ## Usage
 
@@ -48,26 +93,63 @@ files.
 
 ## Automatic Captioning
 
-<img src='images/auto-captioner-v1.18.0.png' alt='Auto-captioner screenshot' width='100%'>
+Captioning works by talking to a local `llama-server` process. The server is
+only started when you click `Start Auto-Captioning`, and it is terminated
+immediately when captioning finishes (or is canceled), so the VRAM it uses is
+freed again.
 
-In addition to manual tagging, you can automatically generate captions or tags
-for your images inside TagGUI.
-GPU generation requires a compatible NVIDIA GPU, and CPU generation is also
-supported.
+### Setup
 
-To use the feature, select the images you want to caption in the image list,
-then select the captioning model you want to use in the Auto-Captioner pane.
-If you have a local directory containing previously downloaded models, you can
-set it in `File` -> `Settings` to include the models in the model list.
-Click the `Start Auto-Captioning` button to start captioning.
-You can select multiple images to batch generate captions for all of them.
-It can take up to several minutes to download and load a model when you first
-use it, but subsequent generations will be much faster.
+1. Set the absolute path to the llama.cpp server binary in `File` ->
+   `Settings` -> `llama.cpp server binary (llama-server)`, for example
+   `/home/user/AI/llama.cpp/build/bin/llama-server`.
+2. Optional: Set `Auto-captioning GGUF models directory` in `File` ->
+   `Settings` to a directory containing your GGUF files. It is scanned
+   recursively for `*.gguf` files, which then appear in the drop-down lists
+   of the Auto-Captioner pane. Files whose names start with `mmproj` are
+   treated as multimodal projector files (the llama.cpp naming convention).
+3. In the Auto-Captioner pane, set:
+   - `Model (GGUF)`: The path to the model file, for example
+     `/models/Qwen3-VL-8B-Instruct-Q4_K_M.gguf`.
+   - `MMProj (GGUF)`: The path to the multimodal projector file belonging to
+     the model, for example `/models/mmproj-Qwen3-VL-8B-F16.gguf`.
+   - `Model family`: The model family, so that TagGUI can pass the correct
+     chat template to `llama-server`. The default
+     `Auto (template embedded in the GGUF)` uses the chat template stored in
+     the GGUF metadata, which is correct for practically all modern GGUF
+     releases. The other entries force one of the built-in llama.cpp chat
+     templates (for example `chatml` for the Qwen VL families) and are meant
+     as a fallback for GGUF files with a missing or broken embedded template.
+4. Select the images you want to caption in the image list and click
+   `Start Auto-Captioning`. The first request may take a while because the
+   model has to be loaded into VRAM first; the loading progress of
+   `llama-server` is shown in the Auto-Captioner console.
+
+All vision models that llama.cpp supports work in TagGUI, since llama.cpp
+handles the inference itself. TagGUI only passes the model and mmproj paths,
+the chat template for the selected model family, and the generation
+parameters to `llama-server`.
+
+### Thinking / reasoning
+
+For models that support thinking (chain-of-thought reasoning), such as the
+Qwen3 family:
+
+- `Thinking`: `Model default (auto)` lets the model decide, `Enabled` forces
+  thinking on, and `Disabled` forces it off. This is passed to `llama-server`
+  via its `--reasoning` argument.
+- `Reasoning effort`: For templates that support it, the effort level
+  (`Minimal`, `Low`, `Medium`, `High`, `xHigh`, `Max`) is passed via the
+  `--reasoning-effort` argument of `llama-server`.
+
+Thinking output is separated from the caption: the caption itself only
+contains the final answer, while the reasoning trace (if any) is shown in the
+console output for debugging.
 
 ### Captioning parameters
 
-`Prompt`: Instructions given to the captioning model.
-Prompt formats are handled automatically based on the selected model.
+`Prompt`: Instructions given to the vision model. The chat template for the
+selected model family is applied automatically by `llama-server`.
 You can use the following template variables to dynamically insert information
 about each image into the prompt:
 
@@ -79,34 +161,49 @@ An example prompt using a template variable could be
 `Describe the image using the following tags as context: {tags}`.
 With this prompt, `{tags}` would be replaced with the existing tags of each
 image before the prompt is sent to the model.
+If the prompt is empty, `Describe the image.` is used.
 
-`Start caption with`: Generated captions will start with this text.
+`Start caption with`: Generated captions will start with this text. The text
+is also used to prefill the assistant response, so the model continues the
+caption from it.
+
+`Caption position`: Where the generated caption is inserted relative to the
+existing tags of the image.
 
 `Remove tag separators in caption`: If checked, tag separators (commas by
 default) will be removed from the generated captions.
 
 `Discourage from caption`: Words or phrases that should not be present in the
-generated captions.
-You can separate multiple words or phrases with commas (`,`).
+generated captions, separated by commas (`,`).
 For example, you can put `appears,seems,possibly` to prevent the model from
 using an uncertain tone in the captions.
-The words may still be generated due to limitations related to tokenization.
+Since llama.cpp does not support logit-level word banning, the words are
+appended to the prompt as a negative instruction instead. The words may still
+occasionally be generated.
 
-`Include in caption`: Words or phrases that should be present somewhere in the
-generated captions.
-You can separate multiple words or phrases with commas (`,`).
-You can also allow the captioning model to choose from a group of words or
-phrases by separating them with `|`.
-For example, if you put `cat,orange|white|black`, the model will attempt to
-generate captions that contain the word `cat` and either `orange`, `white`,
-or `black`.
-It is not guaranteed that all of your specifications will be met.
+The `Include in caption` option from the original TagGUI is not available in
+this fork because it required beam search, which llama.cpp does not support.
 
-`Tags to exclude` (WD Tagger models): Tags that should not be generated,
-separated by commas.
+### Advanced settings
 
-Many of the other generation parameters are described in the
-[Hugging Face documentation](https://huggingface.co/docs/transformers/main/en/main_classes/text_generation#transformers.GenerationConfig).
+The advanced settings in the Auto-Captioner pane map to `llama-server` and
+its sampling parameters:
+
+- `Maximum new tokens`: The maximum number of tokens to generate
+  (`max_tokens` in the request).
+- `Temperature`: `0` results in (mostly) deterministic, greedy generation.
+- `Top-p`, `Top-k`, `Min-p`, `Repeat penalty`: Standard llama.cpp sampling
+  parameters sent with each request.
+- `GPU layers to offload`: Passed to `llama-server` as `--n-gpu-layers`
+  (the default of `99` offloads the whole model to the GPU).
+- `Context size (tokens)`: Passed as `--ctx-size`. Vision models consume a
+  lot of context per image, so this should not be too small.
+- `Server port (0 = automatic)`: The port `llama-server` listens on
+  (localhost only). `0` picks a free port automatically.
+- `Server startup timeout (s)`: How long to wait for the model to load.
+- `Per-image timeout (s)`: How long a single captioning request may take.
+- `Additional server arguments`: Extra command-line arguments appended to the
+  `llama-server` invocation, for example `--flash-attn on`.
 
 ## Advanced Image List Filtering
 
