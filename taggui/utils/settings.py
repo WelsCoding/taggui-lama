@@ -9,7 +9,11 @@ DEFAULT_SETTINGS = {
     'tag_separator': ',',
     'insert_space_after_tag_separator': True,
     'autocomplete_tags': True,
-    'models_directory_path': ''
+    # Directory that is scanned for GGUF model and mmproj files.
+    'models_directory_path': '',
+    # Absolute path to the llama.cpp server binary, for example
+    # '/home/user/AI/llama.cpp/build/bin/llama-server'.
+    'llama_server_path': ''
 }
 
 

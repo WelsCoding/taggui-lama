@@ -4,13 +4,13 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (QAbstractItemView, QCompleter, QDockWidget,
                                QLabel, QLineEdit, QListView, QMessageBox,
                                QVBoxLayout, QWidget)
-from transformers import PreTrainedTokenizerBase
 
 from models.proxy_image_list_model import ProxyImageListModel
 from models.tag_counter_model import TagCounterModel
 from utils.image import Image
 from utils.settings import DEFAULT_SETTINGS, get_settings
 from utils.text_edit_item_delegate import TextEditItemDelegate
+from utils.tokenizer import ClipTokenizer
 from utils.utils import get_confirmation_dialog_reply
 from widgets.image_list import ImageList
 
@@ -137,7 +137,7 @@ class ImageTagsEditor(QDockWidget):
     def __init__(self, proxy_image_list_model: ProxyImageListModel,
                  tag_counter_model: TagCounterModel,
                  image_tag_list_model: QStringListModel, image_list: ImageList,
-                 tokenizer: PreTrainedTokenizerBase, tag_separator: str):
+                 tokenizer: ClipTokenizer, tag_separator: str):
         super().__init__()
         self.proxy_image_list_model = proxy_image_list_model
         self.image_tag_list_model = image_tag_list_model

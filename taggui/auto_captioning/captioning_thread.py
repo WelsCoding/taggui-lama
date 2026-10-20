@@ -1,12 +1,10 @@
 from datetime import datetime
-from pathlib import Path
 from time import perf_counter
 
 from PIL import UnidentifiedImageError
 from PySide6.QtCore import QModelIndex, QThread, Qt, Signal
 
-from auto_captioning.auto_captioning_model import AutoCaptioningModel
-from auto_captioning.models_list import get_model_class
+from auto_captioning.llama_cpp_server import LlamaCppServer, LlamaCppServerError
 from models.image_list_model import ImageListModel
 from utils.enums import CaptionPosition
 from utils.image import Image
@@ -63,78 +61,90 @@ class CaptioningThread(QThread):
 
     def __init__(self, parent, image_list_model: ImageListModel,
                  selected_image_indices: list[QModelIndex],
-                 caption_settings: dict, tag_separator: str,
-                 models_directory_path: Path | None):
+                 caption_settings: dict, tag_separator: str):
         super().__init__(parent)
         self.image_list_model = image_list_model
         self.selected_image_indices = selected_image_indices
         self.caption_settings = caption_settings
         self.tag_separator = tag_separator
-        self.models_directory_path = models_directory_path
         self.is_error = False
         self.is_canceled = False
 
     def run_captioning(self):
-        model_id = self.caption_settings['model_id']
-        model_class = get_model_class(model_id)
-        model: AutoCaptioningModel = model_class(
-            captioning_thread_=self, caption_settings=self.caption_settings)
-        error_message = model.get_error_message()
+        server = LlamaCppServer(
+            self.caption_settings, should_cancel=lambda: self.is_canceled)
+        error_message = server.get_error_message()
         if error_message:
             self.is_error = True
             self.clear_console_text_edit_requested.emit()
             print(error_message)
             return
-        model.load_processor_and_model()
-        model.monkey_patch_after_loading()
-        if self.is_canceled:
-            print('Canceled captioning.')
-            return
-        self.clear_console_text_edit_requested.emit()
-        selected_image_count = len(self.selected_image_indices)
-        are_multiple_images_selected = selected_image_count > 1
-        captioning_start_datetime = datetime.now()
-        captioning_message = model.get_captioning_message(
-            are_multiple_images_selected, captioning_start_datetime)
-        print(captioning_message)
-        caption_position = self.caption_settings['caption_position']
-        for i, image_index in enumerate(self.selected_image_indices):
-            start_time = perf_counter()
+        try:
+            # The llama.cpp server is only started when captioning actually
+            # begins, and it is terminated as soon as captioning ends so that
+            # the VRAM it occupies is freed.
+            server.start()
             if self.is_canceled:
                 print('Canceled captioning.')
                 return
-            image: Image = self.image_list_model.data(image_index,
-                                                      Qt.ItemDataRole.UserRole)
-            image_prompt = model.get_image_prompt(image)
-            try:
-                model_inputs = model.get_model_inputs(image_prompt, image)
-            except UnidentifiedImageError:
-                print(f'Skipping {image.path.name} because its file format is '
-                      'not supported or it is a corrupted image.')
-                continue
-            caption, console_output_caption = model.generate_caption(
-                model_inputs, image_prompt)
-            tags = add_caption_to_tags(image.tags, caption, caption_position)
-            self.caption_generated.emit(image_index, caption, tags)
+            self.clear_console_text_edit_requested.emit()
+            selected_image_count = len(self.selected_image_indices)
+            are_multiple_images_selected = selected_image_count > 1
+            captioning_start_datetime = datetime.now()
+            captioning_message = server.get_captioning_message(
+                are_multiple_images_selected, captioning_start_datetime)
+            print(captioning_message)
+            caption_position = self.caption_settings['caption_position']
+            for i, image_index in enumerate(self.selected_image_indices):
+                start_time = perf_counter()
+                if self.is_canceled:
+                    print('Canceled captioning.')
+                    return
+                image: Image = self.image_list_model.data(
+                    image_index, Qt.ItemDataRole.UserRole)
+                image_prompt = server.get_image_prompt(image)
+                try:
+                    caption, console_output_caption = server.generate_caption(
+                        image, image_prompt)
+                except UnidentifiedImageError:
+                    print(f'Skipping {image.path.name} because its file '
+                          'format is not supported or it is a corrupted '
+                          'image.')
+                    continue
+                tags = add_caption_to_tags(image.tags, caption,
+                                           caption_position)
+                self.caption_generated.emit(image_index, caption, tags)
+                if are_multiple_images_selected:
+                    self.progress_bar_update_requested.emit(i + 1)
+                if i == 0 and not are_multiple_images_selected:
+                    self.clear_console_text_edit_requested.emit()
+                if console_output_caption is None:
+                    console_output_caption = caption
+                print(f'{image.path.name} '
+                      f'({perf_counter() - start_time:.1f} s):\n'
+                      f'{console_output_caption}')
             if are_multiple_images_selected:
-                self.progress_bar_update_requested.emit(i + 1)
-            if i == 0 and not are_multiple_images_selected:
-                self.clear_console_text_edit_requested.emit()
-            if console_output_caption is None:
-                console_output_caption = caption
-            print(f'{image.path.name} ({perf_counter() - start_time:.1f} s):\n'
-                  f'{console_output_caption}')
-        if are_multiple_images_selected:
-            captioning_end_datetime = datetime.now()
-            total_captioning_duration = ((captioning_end_datetime
-                                          - captioning_start_datetime)
-                                         .total_seconds())
-            average_captioning_duration = (total_captioning_duration /
-                                           selected_image_count)
-            print(f'Finished captioning {selected_image_count} images in '
-                  f'{format_duration(total_captioning_duration)} '
-                  f'({average_captioning_duration:.1f} s/image) at '
-                  f'{captioning_end_datetime.strftime("%Y-%m-%d %H:%M:%S")}.')
+                captioning_end_datetime = datetime.now()
+                total_captioning_duration = ((captioning_end_datetime
+                                              - captioning_start_datetime)
+                                             .total_seconds())
+                average_captioning_duration = (total_captioning_duration /
+                                               selected_image_count)
+                print(f'Finished captioning {selected_image_count} images in '
+                      f'{format_duration(total_captioning_duration)} '
+                      f'({average_captioning_duration:.1f} s/image) at '
+                      f'{captioning_end_datetime.strftime("%Y-%m-%d %H:%M:%S")}.')
+        except LlamaCppServerError as error:
+            if self.is_canceled:
+                print('Canceled captioning.')
+            else:
+                self.is_error = True
+                print(str(error))
+        finally:
+            server.stop()
+            if not self.is_canceled:
+                print('The llama.cpp server was stopped and its VRAM was '
+                      'released.')
 
     def run(self):
         try:

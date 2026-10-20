@@ -3,23 +3,24 @@ from pathlib import Path
 
 from PySide6.QtCore import QModelIndex, Qt, Signal, Slot
 from PySide6.QtGui import QFontMetrics, QTextCursor
-from PySide6.QtWidgets import (QAbstractScrollArea, QDockWidget, QFormLayout,
-                               QFrame, QHBoxLayout, QLabel, QMessageBox,
-                               QPlainTextEdit, QProgressBar, QScrollArea,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractScrollArea, QDockWidget, QFileDialog,
+                               QFormLayout, QFrame, QHBoxLayout, QLabel,
+                               QMessageBox, QPlainTextEdit, QProgressBar,
+                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from auto_captioning.captioning_thread import CaptioningThread
-from auto_captioning.models.wd_tagger import WdTagger
-from auto_captioning.models_list import MODELS, get_model_class
+from auto_captioning.model_families import (DEFAULT_MODEL_FAMILY,
+                                            MODEL_FAMILY_LABELS)
 from dialogs.caption_multiple_images_dialog import CaptionMultipleImagesDialog
 from models.image_list_model import ImageListModel
 from utils.big_widgets import TallPushButton
-from utils.enums import CaptionDevice, CaptionPosition
+from utils.enums import CaptionPosition, ReasoningEffort, ThinkingMode
 from utils.settings import DEFAULT_SETTINGS, get_settings, get_tag_separator
 from utils.settings_widgets import (FocusedScrollSettingsComboBox,
                                     FocusedScrollSettingsDoubleSpinBox,
                                     FocusedScrollSettingsSpinBox,
-                                    SettingsBigCheckBox, SettingsLineEdit,
+                                    SettingsBigCheckBox,
+                                    SettingsComboBox, SettingsLineEdit,
                                     SettingsPlainTextEdit)
 from utils.utils import pluralize
 from widgets.image_list import ImageList
@@ -47,26 +48,94 @@ class HorizontalLine(QFrame):
         self.setFrameShadow(QFrame.Shadow.Raised)
 
 
+def get_local_gguf_paths(models_directory_path: Path,
+                         mmproj_only: bool) -> list[str]:
+    """
+    Get the sorted paths of the GGUF files under a directory. By llama.cpp
+    convention, multimodal projector files start with `mmproj`. Depending on
+    `mmproj_only`, only the mmproj files or only the non-mmproj files are
+    returned.
+    """
+    gguf_paths = models_directory_path.glob('**/*.gguf')
+    matching_paths = []
+    for gguf_path in gguf_paths:
+        is_mmproj = gguf_path.name.lower().startswith('mmproj')
+        if is_mmproj == mmproj_only:
+            matching_paths.append(str(gguf_path))
+    matching_paths.sort()
+    return matching_paths
+
+
+class PathComboBox(QWidget):
+    """
+    An editable combo box for a file path, persisted to the settings, with a
+    browse button. Paths found in the GGUF models directory are added to the
+    combo box, and a path can also be entered or browsed for manually.
+    """
+    def __init__(self, key: str, browse_caption: str, known_paths: list[str]):
+        super().__init__()
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.combo_box = SettingsComboBox(key=key, default='')
+        self.combo_box.setEditable(True)
+        # `setEditable()` must be called before `addItems()` to preserve any
+        # path that was set previously.
+        self.combo_box.addItems(known_paths)
+        if not get_settings().value(key, '', type=str):
+            # Show the placeholder text instead of the first known path when
+            # no path has been set yet.
+            self.combo_box.setCurrentText('')
+        self.browse_button = QPushButton('Browse...')
+        self.browse_button.setFixedWidth(
+            int(self.browse_button.sizeHint().width() * 1.1))
+        self.browse_button.clicked.connect(
+            lambda: self.browse_for_path(browse_caption))
+        layout.addWidget(self.combo_box, stretch=1)
+        layout.addWidget(self.browse_button)
+
+    @Slot()
+    def browse_for_path(self, caption: str):
+        initial_path = self.combo_box.currentText().strip()
+        initial_directory = str(Path(initial_path).parent) if initial_path \
+            else ''
+        file_path, _ = QFileDialog.getOpenFileName(
+            parent=self, caption=caption, dir=initial_directory,
+            filter='GGUF files (*.gguf);;All files (*)')
+        if file_path:
+            self.combo_box.setCurrentText(file_path)
+
+    def currentText(self) -> str:
+        return self.combo_box.currentText()
+
+
 class CaptionSettingsForm(QVBoxLayout):
     def __init__(self):
         super().__init__()
         self.settings = get_settings()
-        try:
-            import bitsandbytes
-            self.is_bitsandbytes_available = True
-        except RuntimeError:
-            self.is_bitsandbytes_available = False
+        local_model_paths, local_mmproj_paths = self.get_local_gguf_paths()
+
         basic_settings_form = QFormLayout()
         basic_settings_form.setRowWrapPolicy(
             QFormLayout.RowWrapPolicy.WrapAllRows)
         basic_settings_form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        self.model_combo_box = FocusedScrollSettingsComboBox(key='model_id')
-        # `setEditable()` must be called before `addItems()` to preserve any
-        # custom model that was set.
-        self.model_combo_box.setEditable(True)
-        self.model_combo_box.addItems(self.get_local_model_paths())
-        self.model_combo_box.addItems(MODELS)
+        self.model_path_combo_box = PathComboBox(
+            key='llama_model_path',
+            browse_caption='Select the model GGUF file',
+            known_paths=local_model_paths)
+        self.model_path_combo_box.combo_box.lineEdit().setPlaceholderText(
+            '/path/to/model.gguf')
+        self.mmproj_path_combo_box = PathComboBox(
+            key='llama_mmproj_path',
+            browse_caption='Select the multimodal projector (mmproj) GGUF '
+                           'file',
+            known_paths=local_mmproj_paths)
+        self.mmproj_path_combo_box.combo_box.lineEdit().setPlaceholderText(
+            '/path/to/mmproj-model-f16.gguf')
+        self.model_family_combo_box = FocusedScrollSettingsComboBox(
+            key='llama_model_family', default=DEFAULT_MODEL_FAMILY)
+        self.model_family_combo_box.addItems(MODEL_FAMILY_LABELS)
         self.prompt_text_edit = SettingsPlainTextEdit(key='prompt')
         set_text_edit_height(self.prompt_text_edit, 4)
         self.caption_start_line_edit = SettingsLineEdit(key='caption_start')
@@ -74,17 +143,6 @@ class CaptionSettingsForm(QVBoxLayout):
         self.caption_position_combo_box = FocusedScrollSettingsComboBox(
             key='caption_position')
         self.caption_position_combo_box.addItems(list(CaptionPosition))
-        self.device_combo_box = FocusedScrollSettingsComboBox(key='device')
-        self.device_combo_box.addItems(list(CaptionDevice))
-        self.load_in_4_bit_container = QWidget()
-        load_in_4_bit_layout = QHBoxLayout()
-        load_in_4_bit_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        load_in_4_bit_layout.setContentsMargins(0, 0, 0, 0)
-        self.load_in_4_bit_check_box = SettingsBigCheckBox(
-            key='load_in_4_bit', default=True)
-        load_in_4_bit_layout.addWidget(QLabel('Load in 4-bit'))
-        load_in_4_bit_layout.addWidget(self.load_in_4_bit_check_box)
-        self.load_in_4_bit_container.setLayout(load_in_4_bit_layout)
         self.remove_tag_separators_container = QWidget()
         remove_tag_separators_layout = QHBoxLayout(
             self.remove_tag_separators_container)
@@ -97,7 +155,21 @@ class CaptionSettingsForm(QVBoxLayout):
         remove_tag_separators_layout.addWidget(remove_tag_separators_label)
         remove_tag_separators_layout.addWidget(
             self.remove_tag_separators_check_box)
-        basic_settings_form.addRow('Model', self.model_combo_box)
+        self.thinking_mode_combo_box = FocusedScrollSettingsComboBox(
+            key='llama_thinking_mode', default=ThinkingMode.AUTO.value)
+        self.thinking_mode_combo_box.addItems([mode.value for mode
+                                               in ThinkingMode])
+        self.reasoning_effort_combo_box = FocusedScrollSettingsComboBox(
+            key='llama_reasoning_effort',
+            default=ReasoningEffort.DEFAULT.value)
+        self.reasoning_effort_combo_box.addItems([effort.value for effort
+                                                  in ReasoningEffort])
+
+        basic_settings_form.addRow('Model (GGUF)', self.model_path_combo_box)
+        basic_settings_form.addRow('MMProj (GGUF)',
+                                   self.mmproj_path_combo_box)
+        basic_settings_form.addRow('Model family',
+                                   self.model_family_combo_box)
         self.prompt_label = QLabel('Prompt')
         basic_settings_form.addRow(self.prompt_label, self.prompt_text_edit)
         self.caption_start_label = QLabel('Start caption with')
@@ -105,41 +177,11 @@ class CaptionSettingsForm(QVBoxLayout):
                                    self.caption_start_line_edit)
         basic_settings_form.addRow('Caption position',
                                    self.caption_position_combo_box)
-        self.device_label = QLabel('Device')
-        basic_settings_form.addRow(self.device_label, self.device_combo_box)
-        basic_settings_form.addRow(self.load_in_4_bit_container)
         basic_settings_form.addRow(self.remove_tag_separators_container)
-
-        self.wd_tagger_settings_form_container = QWidget()
-        wd_tagger_settings_form = QFormLayout(
-            self.wd_tagger_settings_form_container)
-        wd_tagger_settings_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        wd_tagger_settings_form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        self.show_probabilities_check_box = SettingsBigCheckBox(
-            key='wd_tagger_show_probabilities', default=True)
-        self.min_probability_spin_box = FocusedScrollSettingsDoubleSpinBox(
-            key='wd_tagger_min_probability', default=0.4, minimum=0.01,
-            maximum=1)
-        self.min_probability_spin_box.setSingleStep(0.01)
-        self.max_tags_spin_box = FocusedScrollSettingsSpinBox(
-            key='wd_tagger_max_tags', default=30, minimum=1, maximum=999)
-        tags_to_exclude_form = QFormLayout()
-        tags_to_exclude_form.setRowWrapPolicy(
-            QFormLayout.RowWrapPolicy.WrapAllRows)
-        tags_to_exclude_form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        self.tags_to_exclude_text_edit = SettingsPlainTextEdit(
-            key='wd_tagger_tags_to_exclude')
-        tags_to_exclude_form.addRow('Tags to exclude',
-                                    self.tags_to_exclude_text_edit)
-        set_text_edit_height(self.tags_to_exclude_text_edit, 4)
-        wd_tagger_settings_form.addRow('Show probabilities',
-                                       self.show_probabilities_check_box)
-        wd_tagger_settings_form.addRow('Minimum probability',
-                                       self.min_probability_spin_box)
-        wd_tagger_settings_form.addRow('Maximum tags', self.max_tags_spin_box)
-        wd_tagger_settings_form.addRow(tags_to_exclude_form)
+        basic_settings_form.addRow('Thinking',
+                                   self.thinking_mode_combo_box)
+        basic_settings_form.addRow('Reasoning effort',
+                                   self.reasoning_effort_combo_box)
 
         self.toggle_advanced_settings_form_button = TallPushButton(
             'Show Advanced Settings')
@@ -150,150 +192,119 @@ class CaptionSettingsForm(QVBoxLayout):
         advanced_settings_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         advanced_settings_form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        bad_forced_words_form = QFormLayout()
-        bad_forced_words_form.setRowWrapPolicy(
-            QFormLayout.RowWrapPolicy.WrapAllRows)
-        bad_forced_words_form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         self.bad_words_line_edit = SettingsLineEdit(key='bad_words')
         self.bad_words_line_edit.setClearButtonEnabled(True)
-        self.forced_words_line_edit = SettingsLineEdit(key='forced_words')
-        self.forced_words_line_edit.setClearButtonEnabled(True)
-        bad_forced_words_form.addRow('Discourage from caption',
-                                     self.bad_words_line_edit)
-        bad_forced_words_form.addRow('Include in caption',
-                                     self.forced_words_line_edit)
-        self.min_new_token_count_spin_box = FocusedScrollSettingsSpinBox(
-            key='min_new_tokens', default=1, minimum=1, maximum=999)
+        advanced_settings_form.addRow('Discourage from caption',
+                                      self.bad_words_line_edit)
         self.max_new_token_count_spin_box = FocusedScrollSettingsSpinBox(
-            key='max_new_tokens', default=100, minimum=1, maximum=999)
-        self.beam_count_spin_box = FocusedScrollSettingsSpinBox(
-            key='num_beams', default=1, minimum=1, maximum=99)
-        self.length_penalty_spin_box = FocusedScrollSettingsDoubleSpinBox(
-            key='length_penalty', default=1, minimum=-5, maximum=5)
-        self.length_penalty_spin_box.setSingleStep(0.1)
-        self.use_sampling_check_box = SettingsBigCheckBox(key='do_sample',
-                                                          default=False)
-        # The temperature must be positive.
+            key='max_new_tokens', default=256, minimum=1, maximum=32768)
         self.temperature_spin_box = FocusedScrollSettingsDoubleSpinBox(
-            key='temperature', default=1, minimum=0.01, maximum=2)
-        self.temperature_spin_box.setSingleStep(0.01)
-        self.top_k_spin_box = FocusedScrollSettingsSpinBox(
-            key='top_k', default=50, minimum=0, maximum=200)
+            key='temperature', default=0, minimum=0, maximum=2)
+        self.temperature_spin_box.setSingleStep(0.05)
         self.top_p_spin_box = FocusedScrollSettingsDoubleSpinBox(
             key='top_p', default=1, minimum=0, maximum=1)
         self.top_p_spin_box.setSingleStep(0.01)
-        self.repetition_penalty_spin_box = FocusedScrollSettingsDoubleSpinBox(
-            key='repetition_penalty', default=1, minimum=1, maximum=2)
-        self.repetition_penalty_spin_box.setSingleStep(0.01)
-        self.no_repeat_ngram_size_spin_box = FocusedScrollSettingsSpinBox(
-            key='no_repeat_ngram_size', default=3, minimum=0, maximum=5)
-        self.gpu_index_spin_box = FocusedScrollSettingsSpinBox(
-            key='gpu_index', default=0, minimum=0, maximum=9)
-        advanced_settings_form.addRow(bad_forced_words_form)
-        advanced_settings_form.addRow(HorizontalLine())
-        advanced_settings_form.addRow('Minimum tokens',
-                                      self.min_new_token_count_spin_box)
-        advanced_settings_form.addRow('Maximum tokens',
+        self.top_k_spin_box = FocusedScrollSettingsSpinBox(
+            key='top_k', default=40, minimum=0, maximum=1000)
+        self.min_p_spin_box = FocusedScrollSettingsDoubleSpinBox(
+            key='min_p', default=0.05, minimum=0, maximum=1)
+        self.min_p_spin_box.setSingleStep(0.01)
+        self.repeat_penalty_spin_box = FocusedScrollSettingsDoubleSpinBox(
+            key='repeat_penalty', default=1.1, minimum=0, maximum=2)
+        self.repeat_penalty_spin_box.setSingleStep(0.05)
+        advanced_settings_form.addRow('Maximum new tokens',
                                       self.max_new_token_count_spin_box)
-        advanced_settings_form.addRow('Number of beams',
-                                      self.beam_count_spin_box)
-        advanced_settings_form.addRow('Length penalty',
-                                      self.length_penalty_spin_box)
-        advanced_settings_form.addRow('Use sampling',
-                                      self.use_sampling_check_box)
         advanced_settings_form.addRow('Temperature',
                                       self.temperature_spin_box)
-        advanced_settings_form.addRow('Top-k', self.top_k_spin_box)
         advanced_settings_form.addRow('Top-p', self.top_p_spin_box)
-        advanced_settings_form.addRow('Repetition penalty',
-                                      self.repetition_penalty_spin_box)
-        advanced_settings_form.addRow('No repeat n-gram size',
-                                      self.no_repeat_ngram_size_spin_box)
+        advanced_settings_form.addRow('Top-k', self.top_k_spin_box)
+        advanced_settings_form.addRow('Min-p', self.min_p_spin_box)
+        advanced_settings_form.addRow('Repeat penalty',
+                                      self.repeat_penalty_spin_box)
         advanced_settings_form.addRow(HorizontalLine())
-        advanced_settings_form.addRow('GPU index', self.gpu_index_spin_box)
+        # The key is versioned ('_v2') because the meaning of the setting
+        # changed: the old default of 99 forced all layers into VRAM and
+        # disabled llama.cpp's automatic memory fitting, which caused CUDA
+        # out-of-memory errors for models larger than the VRAM. The new
+        # default of -1 leaves the choice to llama-server.
+        self.gpu_layer_count_spin_box = FocusedScrollSettingsSpinBox(
+            key='llama_gpu_layers_v2', default=-1, minimum=-1, maximum=999)
+        self.context_size_spin_box = FocusedScrollSettingsSpinBox(
+            key='llama_context_size', default=8192, minimum=1024,
+            maximum=1048576)
+        self.context_size_spin_box.setSingleStep(1024)
+        self.server_port_spin_box = FocusedScrollSettingsSpinBox(
+            key='llama_server_port', default=0, minimum=0, maximum=65535)
+        self.startup_timeout_spin_box = FocusedScrollSettingsSpinBox(
+            key='llama_server_startup_timeout', default=300, minimum=30,
+            maximum=3600)
+        self.startup_timeout_spin_box.setSingleStep(30)
+        self.generation_timeout_spin_box = FocusedScrollSettingsSpinBox(
+            key='llama_generation_timeout', default=600, minimum=30,
+            maximum=7200)
+        self.generation_timeout_spin_box.setSingleStep(30)
+        self.additional_server_arguments_line_edit = SettingsLineEdit(
+            key='llama_server_additional_arguments')
+        self.additional_server_arguments_line_edit.setClearButtonEnabled(
+            True)
+        advanced_settings_form.addRow('GPU layers to offload (-1 = auto)',
+                                      self.gpu_layer_count_spin_box)
+        advanced_settings_form.addRow('Context size (tokens)',
+                                      self.context_size_spin_box)
+        advanced_settings_form.addRow('Server port (0 = automatic)',
+                                      self.server_port_spin_box)
+        advanced_settings_form.addRow('Server startup timeout (s)',
+                                      self.startup_timeout_spin_box)
+        advanced_settings_form.addRow('Per-image timeout (s)',
+                                      self.generation_timeout_spin_box)
+        advanced_settings_form.addRow(
+            'Additional server arguments',
+            self.additional_server_arguments_line_edit)
         self.advanced_settings_form_container.hide()
 
         self.addLayout(basic_settings_form)
-        self.addWidget(self.wd_tagger_settings_form_container)
         self.horizontal_line = HorizontalLine()
         self.addWidget(self.horizontal_line)
         self.addWidget(self.toggle_advanced_settings_form_button)
         self.addWidget(self.advanced_settings_form_container)
         self.addStretch()
 
-        self.model_combo_box.currentTextChanged.connect(
-            self.show_settings_for_model)
-        self.device_combo_box.currentTextChanged.connect(
-            self.set_load_in_4_bit_visibility)
+        self.thinking_mode_combo_box.currentTextChanged.connect(
+            self.set_reasoning_effort_enabled)
         self.toggle_advanced_settings_form_button.clicked.connect(
             self.toggle_advanced_settings_form)
-        # Make sure the minimum new token count is less than or equal to the
-        # maximum new token count.
-        self.min_new_token_count_spin_box.valueChanged.connect(
-            self.max_new_token_count_spin_box.setMinimum)
-        self.max_new_token_count_spin_box.valueChanged.connect(
-            self.min_new_token_count_spin_box.setMaximum)
 
-        self.show_settings_for_model(self.model_combo_box.currentText())
-        self.set_load_in_4_bit_visibility(self.device_combo_box.currentText())
-        if not self.is_bitsandbytes_available:
-            self.load_in_4_bit_check_box.setChecked(False)
+        self.set_reasoning_effort_enabled(
+            self.thinking_mode_combo_box.currentText())
 
-    def get_local_model_paths(self) -> list[str]:
+    def get_local_gguf_paths(self) -> tuple[list[str], list[str]]:
+        """
+        Get the local model and mmproj GGUF paths found under the GGUF models
+        directory set in the settings.
+        """
         models_directory_path = self.settings.value(
             'models_directory_path',
             defaultValue=DEFAULT_SETTINGS['models_directory_path'], type=str)
         if not models_directory_path:
-            return []
+            return [], []
         models_directory_path = Path(models_directory_path)
-        print(f'Loading local auto-captioning model paths under '
-              f'{models_directory_path}...')
-        # Auto-captioning models have a `config.json` file.
-        config_paths = set(models_directory_path.glob('**/config.json'))
-        # WD Tagger models have a `selected_tags.csv` file.
-        selected_tags_paths = set(
-            models_directory_path.glob('**/selected_tags.csv'))
-        model_directory_paths = [str(path.parent) for path
-                                 in config_paths | selected_tags_paths]
-        model_directory_paths.sort()
-        print(f'Loaded {len(model_directory_paths)} model '
-              f'{pluralize("path", len(model_directory_paths))}.')
-        return model_directory_paths
+        if not models_directory_path.is_dir():
+            return [], []
+        print(f'Loading local GGUF paths under {models_directory_path}...')
+        model_paths = get_local_gguf_paths(models_directory_path,
+                                           mmproj_only=False)
+        mmproj_paths = get_local_gguf_paths(models_directory_path,
+                                            mmproj_only=True)
+        total_path_count = len(model_paths) + len(mmproj_paths)
+        print(f'Loaded {len(model_paths)} model and {len(mmproj_paths)} '
+              f'mmproj {pluralize("path", total_path_count)}.')
+        return model_paths, mmproj_paths
 
     @Slot(str)
-    def show_settings_for_model(self, model_id: str):
-        wd_tagger_widgets = [self.wd_tagger_settings_form_container]
-        non_wd_tagger_widgets = [
-            self.prompt_label,
-            self.prompt_text_edit,
-            self.caption_start_label,
-            self.caption_start_line_edit,
-            self.device_label,
-            self.device_combo_box,
-            self.load_in_4_bit_container,
-            self.remove_tag_separators_container,
-            self.horizontal_line,
-            self.toggle_advanced_settings_form_button,
-            self.advanced_settings_form_container
-        ]
-        is_wd_tagger_model = get_model_class(model_id) == WdTagger
-        for widget in wd_tagger_widgets:
-            widget.setVisible(is_wd_tagger_model)
-        for widget in non_wd_tagger_widgets:
-            widget.setVisible(not is_wd_tagger_model)
-        self.set_load_in_4_bit_visibility(self.device_combo_box.currentText())
-
-    @Slot(str)
-    def set_load_in_4_bit_visibility(self, device: str):
-        model_id = self.model_combo_box.currentText()
-        is_wd_tagger_model = get_model_class(model_id) == WdTagger
-        if is_wd_tagger_model:
-            self.load_in_4_bit_container.setVisible(False)
-            return
-        is_load_in_4_bit_available = (self.is_bitsandbytes_available
-                                      and device == CaptionDevice.GPU)
-        self.load_in_4_bit_container.setVisible(is_load_in_4_bit_available)
+    def set_reasoning_effort_enabled(self, thinking_mode: str):
+        # The reasoning effort has no effect when thinking is disabled.
+        self.reasoning_effort_combo_box.setEnabled(
+            thinking_mode != ThinkingMode.DISABLED.value)
 
     @Slot()
     def toggle_advanced_settings_form(self):
@@ -307,38 +318,38 @@ class CaptionSettingsForm(QVBoxLayout):
                 'Show Advanced Settings')
 
     def get_caption_settings(self) -> dict:
+        llama_server_path = self.settings.value(
+            'llama_server_path',
+            defaultValue=DEFAULT_SETTINGS['llama_server_path'], type=str)
         return {
-            'model_id': self.model_combo_box.currentText(),
+            'llama_server_path': llama_server_path,
+            'model_path': self.model_path_combo_box.currentText(),
+            'mmproj_path': self.mmproj_path_combo_box.currentText(),
+            'model_family': self.model_family_combo_box.currentText(),
+            'thinking_mode': self.thinking_mode_combo_box.currentText(),
+            'reasoning_effort': self.reasoning_effort_combo_box.currentText(),
             'prompt': self.prompt_text_edit.toPlainText(),
             'caption_start': self.caption_start_line_edit.text(),
             'caption_position': self.caption_position_combo_box.currentText(),
-            'device': self.device_combo_box.currentText(),
-            'gpu_index': self.gpu_index_spin_box.value(),
-            'load_in_4_bit': self.load_in_4_bit_check_box.isChecked(),
             'remove_tag_separators':
                 self.remove_tag_separators_check_box.isChecked(),
             'bad_words': self.bad_words_line_edit.text(),
-            'forced_words': self.forced_words_line_edit.text(),
             'generation_parameters': {
-                'min_new_tokens': self.min_new_token_count_spin_box.value(),
                 'max_new_tokens': self.max_new_token_count_spin_box.value(),
-                'num_beams': self.beam_count_spin_box.value(),
-                'length_penalty': self.length_penalty_spin_box.value(),
-                'do_sample': self.use_sampling_check_box.isChecked(),
                 'temperature': self.temperature_spin_box.value(),
-                'top_k': self.top_k_spin_box.value(),
                 'top_p': self.top_p_spin_box.value(),
-                'repetition_penalty': self.repetition_penalty_spin_box.value(),
-                'no_repeat_ngram_size':
-                    self.no_repeat_ngram_size_spin_box.value()
+                'top_k': self.top_k_spin_box.value(),
+                'min_p': self.min_p_spin_box.value(),
+                'repeat_penalty': self.repeat_penalty_spin_box.value()
             },
-            'wd_tagger_settings': {
-                'show_probabilities':
-                    self.show_probabilities_check_box.isChecked(),
-                'min_probability': self.min_probability_spin_box.value(),
-                'max_tags': self.max_tags_spin_box.value(),
-                'tags_to_exclude':
-                    self.tags_to_exclude_text_edit.toPlainText()
+            'server_parameters': {
+                'gpu_layers': self.gpu_layer_count_spin_box.value(),
+                'context_size': self.context_size_spin_box.value(),
+                'port': self.server_port_spin_box.value(),
+                'startup_timeout': self.startup_timeout_spin_box.value(),
+                'generation_timeout': self.generation_timeout_spin_box.value(),
+                'additional_arguments':
+                    self.additional_server_arguments_line_edit.text()
             }
         }
 
@@ -360,11 +371,6 @@ class AutoCaptioner(QDockWidget):
         self.settings = get_settings()
         self.is_captioning = False
         self.captioning_thread = None
-        self.processor = None
-        self.model = None
-        self.model_id: str | None = None
-        self.model_device_type: str | None = None
-        self.is_model_loaded_in_4_bit = None
         # Whether the last block of text in the console text edit should be
         # replaced with the next block of text that is outputted.
         self.replace_last_console_text_edit_block = False
@@ -482,14 +488,9 @@ class AutoCaptioner(QDockWidget):
             self.progress_bar.setValue(0)
             self.progress_bar.show()
         tag_separator = get_tag_separator()
-        models_directory_path = self.settings.value(
-            'models_directory_path',
-            defaultValue=DEFAULT_SETTINGS['models_directory_path'], type=str)
-        models_directory_path = (Path(models_directory_path)
-                                 if models_directory_path else None)
         self.captioning_thread = CaptioningThread(
             self, self.image_list_model, selected_image_indices,
-            caption_settings, tag_separator, models_directory_path)
+            caption_settings, tag_separator)
         self.captioning_thread.text_outputted.connect(
             self.update_console_text_edit)
         self.captioning_thread.clear_console_text_edit_requested.connect(

@@ -21,6 +21,27 @@ class CaptionPosition(str, Enum):
     DO_NOT_ADD = 'Do not add to tags'
 
 
-class CaptionDevice(str, Enum):
-    GPU = 'GPU if available'
-    CPU = 'CPU'
+class ThinkingMode(str, Enum):
+    """
+    Whether the captioning model should use thinking (chain-of-thought
+    reasoning) when the model and its chat template support it. The value is
+    passed to `llama-server` via its `--reasoning` argument.
+    """
+    AUTO = 'Model default (auto)'
+    ENABLED = 'Enabled'
+    DISABLED = 'Disabled'
+
+
+class ReasoningEffort(str, Enum):
+    """
+    The reasoning effort level passed to the chat template via the
+    `--reasoning-effort` argument of `llama-server`. Only applies to models
+    whose templates support it.
+    """
+    DEFAULT = 'Model default'
+    MINIMAL = 'Minimal'
+    LOW = 'Low'
+    MEDIUM = 'Medium'
+    HIGH = 'High'
+    XHIGH = 'xHigh'
+    MAX = 'Max'
