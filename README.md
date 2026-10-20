@@ -130,6 +130,12 @@ handles the inference itself. TagGUI only passes the model and mmproj paths,
 the chat template for the selected model family, and the generation
 parameters to `llama-server`.
 
+Models that are larger than the GPU VRAM are supported as well: with the
+default settings, `llama-server` loads as much of the model as possible into
+VRAM and offloads the remainder to system RAM (this requires a recent
+llama.cpp build, where the automatic memory fitting via `--fit` is enabled by
+default).
+
 ### Thinking / reasoning
 
 For models that support thinking (chain-of-thought reasoning), such as the
@@ -194,8 +200,15 @@ its sampling parameters:
 - `Temperature`: `0` results in (mostly) deterministic, greedy generation.
 - `Top-p`, `Top-k`, `Min-p`, `Repeat penalty`: Standard llama.cpp sampling
   parameters sent with each request.
-- `GPU layers to offload`: Passed to `llama-server` as `--n-gpu-layers`
-  (the default of `99` offloads the whole model to the GPU).
+- `GPU layers to offload (-1 = auto)`: With the default of `-1`,
+  `--n-gpu-layers` is not passed to `llama-server` at all, so a recent
+  llama.cpp build automatically fits the model to the available memory: it
+  offloads as many layers as fit into the free VRAM and keeps the rest in
+  system RAM (the `--fit` option, enabled by default). Models larger than
+  the VRAM therefore work out of the box, just slower. Set a value of `0`
+  or higher to pass an explicit `--n-gpu-layers` value instead; note that
+  an explicit value disables the automatic fitting and can lead to CUDA
+  out-of-memory errors if it is set too high.
 - `Context size (tokens)`: Passed as `--ctx-size`. Vision models consume a
   lot of context per image, so this should not be too small.
 - `Server port (0 = automatic)`: The port `llama-server` listens on

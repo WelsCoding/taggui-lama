@@ -192,9 +192,17 @@ class LlamaCppServer:
             # Use the Jinja template engine so that the chat template stored
             # in the GGUF metadata (or the one selected below) is applied.
             '--jinja',
-            '--n-gpu-layers', str(self.gpu_layer_count),
             '--ctx-size', str(self.context_size),
         ]
+        # Only override the GPU layer count when the user explicitly requests
+        # a fixed value. With -1 (automatic), `--n-gpu-layers` is left unset
+        # so that recent llama-server builds can auto-fit the model: they
+        # offload as many layers as fit into the free VRAM and keep the rest
+        # in system RAM instead of aborting with a CUDA out-of-memory error
+        # (see llama.cpp's `--fit` option, which is enabled by default and
+        # refuses to adjust `n_gpu_layers` when it was set by the user).
+        if self.gpu_layer_count >= 0:
+            arguments += ['--n-gpu-layers', str(self.gpu_layer_count)]
         chat_template = get_chat_template(self.model_family)
         if chat_template:
             arguments += ['--chat-template', chat_template]

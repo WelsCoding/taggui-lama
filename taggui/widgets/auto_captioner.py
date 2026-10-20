@@ -222,8 +222,13 @@ class CaptionSettingsForm(QVBoxLayout):
         advanced_settings_form.addRow('Repeat penalty',
                                       self.repeat_penalty_spin_box)
         advanced_settings_form.addRow(HorizontalLine())
+        # The key is versioned ('_v2') because the meaning of the setting
+        # changed: the old default of 99 forced all layers into VRAM and
+        # disabled llama.cpp's automatic memory fitting, which caused CUDA
+        # out-of-memory errors for models larger than the VRAM. The new
+        # default of -1 leaves the choice to llama-server.
         self.gpu_layer_count_spin_box = FocusedScrollSettingsSpinBox(
-            key='llama_gpu_layers', default=99, minimum=0, maximum=999)
+            key='llama_gpu_layers_v2', default=-1, minimum=-1, maximum=999)
         self.context_size_spin_box = FocusedScrollSettingsSpinBox(
             key='llama_context_size', default=8192, minimum=1024,
             maximum=1048576)
@@ -242,7 +247,7 @@ class CaptionSettingsForm(QVBoxLayout):
             key='llama_server_additional_arguments')
         self.additional_server_arguments_line_edit.setClearButtonEnabled(
             True)
-        advanced_settings_form.addRow('GPU layers to offload',
+        advanced_settings_form.addRow('GPU layers to offload (-1 = auto)',
                                       self.gpu_layer_count_spin_box)
         advanced_settings_form.addRow('Context size (tokens)',
                                       self.context_size_spin_box)
